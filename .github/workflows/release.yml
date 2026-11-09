@@ -1,10 +1,14 @@
-# Builds PacingCalculator.exe on Windows and publishes it as a GitHub Release
-# whenever a version tag is pushed, e.g.:  git tag v1.0.1 && git push origin v1.0.1
-# The app's auto-updater picks up the newest release automatically.
+# Builds PacingCalculator.exe on Windows and publishes it as a GitHub Release.
+#
+# To release: bump the number in version.py and push to main.
+# If no release exists for that version yet, this builds the .exe and publishes
+# release vX.Y.Z (creating the tag). The app's auto-updater picks it up.
+# Pushing a tag like v1.2.0 also works.
 name: Build & Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -17,19 +21,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Work out version
+        id: ver
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+            echo "__version__ = \"$V\"" > version.py
+          else
+            V=$(python -c "from version import __version__; print(__version__)")
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          # Skip if this version is already released
+          if gh release view "v$V" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$V already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.ver.outputs.skip != 'true'
         with:
           python-version: "3.12"
 
-      - name: Stamp version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: echo "__version__ = \"${GITHUB_REF_NAME#v}\"" > version.py
-
       - name: Install PyInstaller
+        if: steps.ver.outputs.skip != 'true'
         run: python -m pip install --upgrade pip pyinstaller
 
       - name: Build exe
+        if: steps.ver.outputs.skip != 'true'
         run: >
           pyinstaller --onefile --windowed --noconfirm
           --name PacingCalculator
@@ -38,13 +59,17 @@ jobs:
           app.py
 
       - uses: actions/upload-artifact@v4
+        if: steps.ver.outputs.skip != 'true'
         with:
           name: PacingCalculator
           path: dist/PacingCalculator.exe
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.ver.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
           files: dist/PacingCalculator.exe
           generate_release_notes: true
