@@ -5,7 +5,7 @@
 A small Windows app for video editors, voice actors and scriptwriters. Enter any two of
 **Word Count**, **Duration** and **Speech Pace (WPM)** and it solves for the third.
 
-- Duration shows a live `Xm YYs` conversion
+- Duration is entered in minutes and seconds; 60+ seconds roll over into minutes automatically
 - A pace gauge shows where the WPM sits: Slow / Audiobook (<130), Conversational (130–160), Fast / Energetic (>160)
 - Press **Enter** to calculate, **Esc** to close
 - Updates itself from this repo's GitHub Releases (on launch, or via **Check for updates**)

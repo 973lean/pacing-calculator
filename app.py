@@ -8,7 +8,10 @@ that field becomes the locked, highlighted result, the other two are inputs.
 
     WPM        = Word Count / Duration
     Word Count = Duration * WPM
-    Duration   = Word Count / WPM          (minutes)
+    Duration   = Word Count / WPM
+
+Duration is entered as separate minutes and seconds; seconds of 60 or more
+roll over into minutes when you leave the field or press Enter.
 
 A pace gauge shows where the current WPM sits on the
 Slow / Conversational / Fast scale.
@@ -71,11 +74,24 @@ ERROR_ZERO = "Value must be greater than 0"
 # --------------------------------------------------------------------------- #
 # Pure helper functions (no Tkinter, easy to test)
 # --------------------------------------------------------------------------- #
-def format_minutes(minutes: float) -> str:
-    """Convert decimal minutes to a 'Xm Ys' string, e.g. 2.5 -> '2m 30s'."""
-    total_seconds = int(round(minutes * 60))
-    mins, secs = divmod(total_seconds, 60)
-    return f"{mins}m {secs:02d}s"
+def parse_duration(minutes_text: str, seconds_text: str) -> float:
+    """
+    Total seconds from separate minutes / seconds text. A blank box counts as 0,
+    but at least one must be filled. Raises ValueError on bad or negative input.
+    """
+    m_text, s_text = minutes_text.strip(), seconds_text.strip()
+    if not m_text and not s_text:
+        raise ValueError("empty duration")
+    minutes = float(m_text) if m_text else 0.0
+    seconds = float(s_text) if s_text else 0.0
+    if minutes < 0 or seconds < 0:
+        raise ValueError("negative duration")
+    return minutes * 60 + seconds
+
+
+def split_seconds(total_seconds: float) -> tuple:
+    """125 -> (2, 5): whole minutes and leftover seconds (rounded to whole seconds)."""
+    return divmod(int(round(total_seconds)), 60)
 
 
 def pace_profile(wpm: float) -> str:
@@ -139,7 +155,8 @@ class PacingCalculatorApp:
         # Tk variables backing each widget
         self.mode = tk.StringVar(value=MODE_WPM)
         self.words_var = tk.StringVar()
-        self.duration_var = tk.StringVar()
+        self.dur_min_var = tk.StringVar()
+        self.dur_sec_var = tk.StringVar()
         self.wpm_var = tk.StringVar()
         self.duration_hint = tk.StringVar()
         self.pace_hint = tk.StringVar()
@@ -150,7 +167,8 @@ class PacingCalculatorApp:
         self._place_window()
 
         # Live hints / gauge update as the user types (or as results are written)
-        self.duration_var.trace_add("write", self._update_duration_hint)
+        self.dur_min_var.trace_add("write", self._update_duration_hint)
+        self.dur_sec_var.trace_add("write", self._update_duration_hint)
         self.wpm_var.trace_add("write", self._update_pace_hint)
 
         # Keyboard: Enter calculates, Escape closes
@@ -263,8 +281,7 @@ class PacingCalculatorApp:
 
         # Fields: label + live hint on one line, input below ----------------
         self.words_entry = self._field(main, 2, "Word Count", self.words_var, None)
-        self.duration_entry = self._field(main, 4, "Duration (minutes)",
-                                          self.duration_var, self.duration_hint)
+        self.dur_min_entry, self.dur_sec_entry = self._duration_field(main, 4)
         self.wpm_entry = self._field(main, 6, "Speech Pace (WPM)",
                                      self.wpm_var, self.pace_hint, bottom_gap=10)
 
@@ -303,10 +320,11 @@ class PacingCalculatorApp:
         self.update_link.bind("<Enter>", lambda _e: self.update_link.configure(fg=ACCENT))
         self.update_link.bind("<Leave>", lambda _e: self.update_link.configure(fg=FAINT))
 
+        # Entries that become the locked result in each mode
         self._output_entry = {
-            MODE_WPM: self.wpm_entry,
-            MODE_WORDS: self.words_entry,
-            MODE_DURATION: self.duration_entry,
+            MODE_WPM: [self.wpm_entry],
+            MODE_WORDS: [self.words_entry],
+            MODE_DURATION: [self.dur_min_entry, self.dur_sec_entry],
         }
 
     # ------------------------------------------------------------- builders
@@ -315,8 +333,8 @@ class PacingCalculatorApp:
         self._make_draggable(lbl)
         return lbl
 
-    def _field(self, parent, row, label, var, hint_var, bottom_gap=18) -> tk.Entry:
-        """Build one labelled input. Returns the Entry widget."""
+    def _field_header(self, parent, row, label, hint_var) -> None:
+        """Label on the left and an optional live hint on the right."""
         header = tk.Frame(parent, bg=BG)
         header.grid(row=row, column=0, sticky="ew", pady=(0, self._px(5)))
         header.columnconfigure(0, weight=1)
@@ -327,22 +345,52 @@ class PacingCalculatorApp:
             hint.grid(row=0, column=1, sticky="e")
             self._make_draggable(hint)
 
-        # Frame provides inner horizontal padding and the 1px border
+    def _input_box(self, parent, var, suffix=None) -> tk.Entry:
+        """A bordered input with inner padding and an optional unit suffix."""
         box = tk.Frame(parent, bg=SURFACE, highlightthickness=1,
                        highlightbackground=BORDER, highlightcolor=BORDER)
-        box.grid(row=row + 1, column=0, sticky="ew", pady=(0, self._px(bottom_gap)))
         box.columnconfigure(0, weight=1)
         entry = tk.Entry(box, textvariable=var, font=self.f_entry, relief="flat", bd=0,
-                         bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                         bg=SURFACE, fg=TEXT, insertbackground=TEXT, width=4,
                          readonlybackground=ACCENT_SOFT, highlightthickness=0)
-        entry.grid(row=0, column=0, sticky="ew", padx=self._px(12), ipady=self._px(9))
-        entry.box = box  # keep a handle so the border can be restyled
+        entry.grid(row=0, column=0, sticky="ew", padx=(self._px(12), 0), ipady=self._px(9))
+        entry.box = box  # handles so the border / suffix can be restyled
+        entry.suffix = None
+        if suffix:
+            entry.suffix = tk.Label(box, text=suffix, bg=SURFACE, fg=FAINT, font=self.f_label)
+            entry.suffix.grid(row=0, column=1, padx=(self._px(4), self._px(12)))
+            entry.suffix.bind("<Button-1>", lambda _e: entry.focus_set())
+        else:
+            entry.grid_configure(padx=self._px(12))
 
         # Accent border while focused
         entry.bind("<FocusIn>", lambda _e: self._style_box(entry, focused=True))
-        entry.bind("<FocusOut>", lambda _e: self._style_box(entry, focused=False))
+        entry.bind("<FocusOut>", lambda _e: self._style_box(entry, focused=False), add="+")
         box.bind("<Button-1>", lambda _e: entry.focus_set())
         return entry
+
+    def _field(self, parent, row, label, var, hint_var, bottom_gap=18) -> tk.Entry:
+        """Build one labelled input. Returns the Entry widget."""
+        self._field_header(parent, row, label, hint_var)
+        entry = self._input_box(parent, var)
+        entry.box.grid(row=row + 1, column=0, sticky="ew", pady=(0, self._px(bottom_gap)))
+        return entry
+
+    def _duration_field(self, parent, row) -> tuple:
+        """Duration as two side-by-side boxes: minutes and seconds."""
+        self._field_header(parent, row, "Duration", self.duration_hint)
+        pair = tk.Frame(parent, bg=BG)
+        pair.grid(row=row + 1, column=0, sticky="ew", pady=(0, self._px(18)))
+        pair.columnconfigure(0, weight=1, uniform="dur")
+        pair.columnconfigure(1, weight=1, uniform="dur")
+        minutes = self._input_box(pair, self.dur_min_var, "min")
+        seconds = self._input_box(pair, self.dur_sec_var, "sec")
+        minutes.box.grid(row=0, column=0, sticky="ew", padx=(0, self._px(6)))
+        seconds.box.grid(row=0, column=1, sticky="ew", padx=(self._px(6), 0))
+        # Roll 60+ seconds (or decimal minutes) into a tidy "M min S sec" on leave
+        for entry in (minutes, seconds):
+            entry.bind("<FocusOut>", lambda _e: self._normalize_duration(), add="+")
+        return minutes, seconds
 
     def _window_button(self, parent, col, symbol, hover_bg, hover_fg, command) -> None:
         """A flat title-bar button (minimise / close) with a hover state."""
@@ -511,27 +559,45 @@ class PacingCalculatorApp:
                 seg.configure(bg=SEG_BG, fg=MUTED, font=self.f_seg)
 
         first_input = None
-        for mode, entry in self._output_entry.items():
-            if mode == current:
-                entry.configure(state="readonly", fg=ACCENT)
-                entry.box.configure(bg=ACCENT_SOFT)
-            else:
-                entry.configure(state="normal", fg=TEXT)
-                entry.box.configure(bg=SURFACE)
-                first_input = first_input or entry
-            self._style_box(entry, focused=False)
+        for mode, entries in self._output_entry.items():
+            for entry in entries:
+                is_result = mode == current
+                entry.configure(state="readonly" if is_result else "normal",
+                                fg=ACCENT if is_result else TEXT)
+                bg = ACCENT_SOFT if is_result else SURFACE
+                entry.box.configure(bg=bg)
+                if entry.suffix is not None:
+                    entry.suffix.configure(bg=bg)
+                if not is_result:
+                    first_input = first_input or entry
+                self._style_box(entry, focused=False)
 
         self.error_text.set("")
         if first_input is not None:
             first_input.focus_set()
 
     def _update_duration_hint(self, *_args) -> None:
-        """Show Duration as 'Xm Ys' while the user types."""
+        """Show the duration in decimal minutes while the user types."""
         try:
-            minutes = parse_float(self.duration_var.get())
-            self.duration_hint.set(format_minutes(minutes) if minutes >= 0 else "")
+            total = parse_duration(self.dur_min_var.get(), self.dur_sec_var.get())
+            self.duration_hint.set(f"{total / 60:.2f} min" if total > 0 else "")
         except ValueError:
             self.duration_hint.set("")
+
+    def _normalize_duration(self) -> None:
+        """Rewrite e.g. 1 min 90 sec as 2 min 30 sec (and 2.5 min as 2 min 30 sec)."""
+        if self.mode.get() == MODE_DURATION:
+            return  # duration is the read-only result in this mode
+        try:
+            total = parse_duration(self.dur_min_var.get(), self.dur_sec_var.get())
+            seconds = float(self.dur_sec_var.get() or 0)
+            minutes = float(self.dur_min_var.get() or 0)
+        except ValueError:
+            return  # leave invalid input alone; Calculate reports it
+        if seconds >= 60 or minutes != int(minutes):
+            mins, secs = split_seconds(total)
+            self.dur_min_var.set(str(mins))
+            self.dur_sec_var.set(str(secs))
 
     def _update_pace_hint(self, *_args) -> None:
         """Show the pacing profile for the current WPM value and move the gauge."""
@@ -584,49 +650,53 @@ class PacingCalculatorApp:
 
     # ------------------------------------------------------------ calculation
     def calculate(self) -> None:
-        """Read the two input fields, solve for the third, and display it."""
+        """Read the two inputs, solve for the third, and display it."""
         self.error_text.set("")
+        self._normalize_duration()
         mode = self.mode.get()
 
         try:
             if mode == MODE_WPM:
                 words = parse_int(self.words_var.get())
-                duration = parse_float(self.duration_var.get())
-                if duration <= 0 or words < 0:
-                    self._show_error(ERROR_ZERO, self.wpm_var)
+                seconds = parse_duration(self.dur_min_var.get(), self.dur_sec_var.get())
+                if seconds <= 0 or words < 0:
+                    self._show_error(ERROR_ZERO, mode)
                     return
-                self.wpm_var.set(str(round(words / duration)))
+                self.wpm_var.set(str(round(words / (seconds / 60))))
 
             elif mode == MODE_WORDS:
-                duration = parse_float(self.duration_var.get())
+                seconds = parse_duration(self.dur_min_var.get(), self.dur_sec_var.get())
                 wpm = parse_int(self.wpm_var.get())
-                if duration <= 0 or wpm <= 0:
-                    self._show_error(ERROR_ZERO, self.words_var)
+                if seconds <= 0 or wpm <= 0:
+                    self._show_error(ERROR_ZERO, mode)
                     return
-                self.words_var.set(str(round(duration * wpm)))
+                self.words_var.set(str(round(seconds / 60 * wpm)))
 
             else:  # MODE_DURATION
                 words = parse_int(self.words_var.get())
                 wpm = parse_int(self.wpm_var.get())
                 if wpm <= 0 or words < 0:
-                    self._show_error(ERROR_ZERO, self.duration_var)
+                    self._show_error(ERROR_ZERO, mode)
                     return
-                self.duration_var.set(f"{words / wpm:.2f}")
+                mins, secs = split_seconds(words / wpm * 60)
+                self.dur_min_var.set(str(mins))
+                self.dur_sec_var.set(str(secs))
 
         except ValueError:
             # Empty strings, letters, or decimals in whole-number fields
-            self._show_error(ERROR_INVALID, self._output_var(mode))
+            self._show_error(ERROR_INVALID, mode)
 
-    def _output_var(self, mode: str) -> tk.StringVar:
-        """Return the StringVar of the output field for a given mode."""
-        return {MODE_WPM: self.wpm_var,
-                MODE_WORDS: self.words_var,
-                MODE_DURATION: self.duration_var}[mode]
+    def _output_vars(self, mode: str) -> list:
+        """The StringVar(s) of the result field for a given mode."""
+        return {MODE_WPM: [self.wpm_var],
+                MODE_WORDS: [self.words_var],
+                MODE_DURATION: [self.dur_min_var, self.dur_sec_var]}[mode]
 
-    def _show_error(self, message: str, output_var: tk.StringVar) -> None:
+    def _show_error(self, message: str, mode: str) -> None:
         """Display an inline error and clear the stale result."""
         self.error_text.set(message)
-        output_var.set("")
+        for var in self._output_vars(mode):
+            var.set("")
 
 
 # --------------------------------------------------------------------------- #
