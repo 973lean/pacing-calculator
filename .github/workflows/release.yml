@@ -1,0 +1,50 @@
+# Builds PacingCalculator.exe on Windows and publishes it as a GitHub Release
+# whenever a version tag is pushed, e.g.:  git tag v1.0.1 && git push origin v1.0.1
+# The app's auto-updater picks up the newest release automatically.
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: echo "__version__ = \"${GITHUB_REF_NAME#v}\"" > version.py
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build exe
+        run: >
+          pyinstaller --onefile --windowed --noconfirm
+          --name PacingCalculator
+          --icon PacingCalculator.ico
+          --add-data "PacingCalculator.ico;."
+          app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PacingCalculator
+          path: dist/PacingCalculator.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/PacingCalculator.exe
+          generate_release_notes: true
