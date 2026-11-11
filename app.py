@@ -25,6 +25,7 @@ Standard library only (tkinter). Package into a single executable with:
         --add-data "PacingCalculator.ico;." app.py
 """
 
+import re
 import sys
 import threading
 import tkinter as tk
@@ -87,6 +88,11 @@ def parse_duration(minutes_text: str, seconds_text: str) -> float:
     if minutes < 0 or seconds < 0:
         raise ValueError("negative duration")
     return minutes * 60 + seconds
+
+
+def count_words(text: str) -> int:
+    """Count words: whitespace-separated chunks containing a letter or digit."""
+    return sum(1 for token in text.split() if re.search(r"\w", token))
 
 
 def split_seconds(total_seconds: float) -> tuple:
@@ -210,6 +216,8 @@ class PacingCalculatorApp:
         self.f_button = tkfont.Font(family=family, size=12, weight="bold")
         self.f_ctrl = tkfont.Font(family=family, size=11)
         self.f_gauge = tkfont.Font(family=family, size=8)
+        self.f_body = tkfont.Font(family=family, size=11)
+        self.f_stat = tkfont.Font(family=family, size=13, weight="bold")
 
     def _place_window(self) -> None:
         """Size the window to its content and centre it on screen."""
@@ -241,6 +249,19 @@ class PacingCalculatorApp:
         bar.grid(row=0, column=0, sticky="ew")
         bar.columnconfigure(0, weight=1)
         self._make_draggable(bar)
+        # View switcher: Calculator / Workspace (plain text tabs, top-left)
+        tabs = tk.Frame(bar, bg=BG)
+        tabs.grid(row=0, column=0, sticky="w", padx=(self._px(PAD - 2), 0))
+        self._make_draggable(tabs)
+        self._tabs = {}
+        for col, (label, view) in enumerate([("Calculator", "calc"), ("Workspace", "work")]):
+            tab = tk.Label(tabs, text=label, bg=BG, fg=FAINT, font=self.f_label,
+                           padx=self._px(2), pady=self._px(6), cursor="hand2")
+            tab.grid(row=0, column=col, padx=(0, self._px(14)))
+            tab.bind("<Button-1>", lambda _e, v=view: self.show_view(v))
+            self._tabs[view] = tab
+        self.view = "calc"
+
         self._window_button(bar, 1, "—", CTRL_HOVER, MUTED, self._minimize)
         self._window_button(bar, 2, "✕", CLOSE_HOVER, "white", self.root.destroy)
 
@@ -263,6 +284,9 @@ class PacingCalculatorApp:
                   padx=self._px(PAD), pady=(self._px(2), self._px(PAD - 6)))
         main.columnconfigure(0, weight=1)
         self._make_draggable(main)
+        self.calc_view = main
+        self.shell.rowconfigure(2, weight=1)
+        self._build_workspace()
 
         # "Solve for" segmented control -------------------------------------
         self._label(main, "SOLVE FOR").grid(row=0, column=0, sticky="w",
@@ -326,6 +350,113 @@ class PacingCalculatorApp:
             MODE_WORDS: [self.words_entry],
             MODE_DURATION: [self.dur_min_entry, self.dur_sec_entry],
         }
+
+    # ------------------------------------------------------------ workspace
+    def _build_workspace(self) -> None:
+        """Script box + WPM; word count and duration update as you type.
+
+        Shares the calculator's grid cell; show_view() raises one or the other.
+        """
+        work = tk.Frame(self.shell, bg=BG)
+        work.grid(row=2, column=0, sticky="nsew",
+                  padx=self._px(PAD), pady=(self._px(2), self._px(PAD - 6)))
+        work.columnconfigure(0, weight=1)
+        work.rowconfigure(0, weight=1)
+        self._make_draggable(work)
+        self.work_view = work
+
+        # Script box
+        box = tk.Frame(work, bg=SURFACE, highlightthickness=1,
+                       highlightbackground=BORDER, highlightcolor=BORDER)
+        box.grid(row=0, column=0, sticky="nsew")
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(0, weight=1)
+        self.script = tk.Text(box, font=self.f_body, wrap="word", undo=True,
+                              relief="flat", bd=0, highlightthickness=0, height=8, width=10,
+                              bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                              selectbackground=ACCENT_SOFT, selectforeground=TEXT,
+                              padx=self._px(14), pady=self._px(12), spacing2=self._px(3))
+        self.script.grid(row=0, column=0, sticky="nsew")
+        self.script.bind("<FocusIn>", lambda _e: box.configure(
+            highlightbackground=ACCENT, highlightcolor=ACCENT))
+        self.script.bind("<FocusOut>", lambda _e: box.configure(
+            highlightbackground=BORDER, highlightcolor=BORDER))
+        self.script.bind("<<Modified>>", self._on_script_change)
+
+        # Placeholder shown while the box is empty
+        self.placeholder = tk.Label(box, text="Paste or type your script\u2026", bg=SURFACE,
+                                    fg=FAINT, font=self.f_body, cursor="xterm")
+        self.placeholder.place(x=self._px(16), y=self._px(12))
+        self.placeholder.bind("<Button-1>", lambda _e: self.script.focus_set())
+
+        # Bottom row: WPM input on the left, live stats on the right
+        row = tk.Frame(work, bg=BG)
+        row.grid(row=1, column=0, sticky="ew", pady=(self._px(14), 0))
+        row.columnconfigure(1, weight=1)
+        self._make_draggable(row)
+
+        self.ws_wpm_var = tk.StringVar(value="150")
+        self.ws_wpm_var.trace_add("write", lambda *_a: self._update_workspace())
+        wpm = self._input_box(row, self.ws_wpm_var, "wpm")
+        wpm.configure(width=4)
+        wpm.box.grid(row=0, column=0, sticky="w")
+        wpm.grid_configure(ipady=self._px(5))
+
+        stats = tk.Frame(row, bg=BG)
+        stats.grid(row=0, column=1, sticky="e")
+        self._make_draggable(stats)
+        self.ws_words = tk.StringVar(value="0")
+        self.ws_time = tk.StringVar(value="0:00")
+        for col, (var, unit) in enumerate([(self.ws_words, "words"), (self.ws_time, "")]):
+            value = tk.Label(stats, textvariable=var, bg=BG, fg=ACCENT if col else TEXT,
+                             font=self.f_stat)
+            value.grid(row=0, column=col * 2, sticky="e")
+            self._make_draggable(value)
+            if unit:
+                lbl = tk.Label(stats, text=unit, bg=BG, fg=MUTED, font=self.f_label)
+                lbl.grid(row=0, column=col * 2 + 1, sticky="sw",
+                         padx=(self._px(4), self._px(18)), pady=(0, self._px(2)))
+                self._make_draggable(lbl)
+
+        self.calc_view.tkraise()
+        self._style_tabs()
+
+    def _on_script_change(self, _event=None) -> None:
+        self.script.edit_modified(False)  # re-arm the <<Modified>> event
+        self._update_workspace()
+
+    def _update_workspace(self) -> None:
+        """Recount words and recompute the read time."""
+        text = self.script.get("1.0", "end-1c")
+        if text:
+            self.placeholder.place_forget()
+        else:
+            self.placeholder.place(x=self._px(16), y=self._px(12))
+        words = count_words(text)
+        self.ws_words.set(f"{words:,}")
+        try:
+            wpm = parse_float(self.ws_wpm_var.get())
+            if wpm <= 0:
+                raise ValueError
+            mins, secs = split_seconds(words / wpm * 60)
+            self.ws_time.set(f"{mins}:{secs:02d}")
+        except ValueError:
+            self.ws_time.set("\u2013:\u2013\u2013")
+
+    def show_view(self, view: str) -> None:
+        """Switch between the calculator and the workspace."""
+        self.view = view
+        if view == "work":
+            self.work_view.tkraise()
+            self.script.focus_set()
+        else:
+            self.calc_view.tkraise()
+            self._on_mode_change()  # restores focus to the first input
+        self._style_tabs()
+
+    def _style_tabs(self) -> None:
+        for view, tab in self._tabs.items():
+            tab.configure(fg=TEXT if view == self.view else FAINT)
 
     # ------------------------------------------------------------- builders
     def _label(self, parent, text) -> tk.Label:
@@ -651,6 +782,8 @@ class PacingCalculatorApp:
     # ------------------------------------------------------------ calculation
     def calculate(self) -> None:
         """Read the two inputs, solve for the third, and display it."""
+        if self.view != "calc":
+            return
         self.error_text.set("")
         self._normalize_duration()
         mode = self.mode.get()
