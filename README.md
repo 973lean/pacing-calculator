@@ -7,7 +7,7 @@ A small Windows app for video editors, voice actors and scriptwriters. Enter any
 
 - Duration is entered in minutes and seconds; 60+ seconds roll over into minutes automatically
 - A pace gauge shows where the WPM sits: Slow / Audiobook (<130), Conversational (130–160), Fast / Energetic (>160)
-- **Workspace** tab: paste or type a script and see its word count and read time update live at your WPM
+- **Workspace** tab: paste or type a script and see its word count and read time update live at your WPM (drag the edges or corner to resize; the calculator stays fixed-size)
 - Press **Enter** to calculate, **Esc** to close
 - Updates itself from this repo's GitHub Releases (on launch, or via **Check for updates**)
 

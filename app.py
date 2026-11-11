@@ -39,6 +39,8 @@ from version import __version__
 # Design tokens
 # --------------------------------------------------------------------------- #
 WINDOW_WIDTH = 480        # height is computed from the content
+WORKSPACE_MIN = (420, 400)  # smallest the Workspace can be resized to
+GRIP = 7                  # width of the invisible resize edges, in px
 PAD = 30                  # outer margin
 
 BG = "#F6F7F9"            # window background
@@ -169,6 +171,8 @@ class PacingCalculatorApp:
         self.error_text = tk.StringVar()
 
         self._drag_offset = (0, 0)
+        self._ws_size = None      # last Workspace size (w, h), restored on return
+        self._resize_start = None
         self._build_ui()
         self._place_window()
 
@@ -229,7 +233,9 @@ class PacingCalculatorApp:
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _fit_height(self) -> None:
-        """Re-fit the window height (e.g. when the update banner appears)."""
+        """Snap to the calculator's fixed size (also used when the banner appears)."""
+        if self.view == "work":
+            return  # the Workspace keeps whatever size the user gave it
         self.root.update_idletasks()
         h = self.shell.winfo_reqheight() + 2
         self.root.geometry(f"{self._px(WINDOW_WIDTH)}x{h}+{self.root.winfo_x()}+{self.root.winfo_y()}")
@@ -420,6 +426,68 @@ class PacingCalculatorApp:
 
         self.calc_view.tkraise()
         self._style_tabs()
+        self._build_resize_handles()
+
+    # --------------------------------------------------------------- resizing
+    def _build_resize_handles(self) -> None:
+        """Right edge, bottom edge and corner grips; only shown in the Workspace."""
+        win = sys.platform == "win32"
+        cursors = {"e": "sb_h_double_arrow", "s": "sb_v_double_arrow",
+                   "se": "size_nw_se" if win else "bottom_right_corner"}
+        g = self._px(GRIP)
+        self._handles = []
+
+        def make(edge, **place):
+            # BG-coloured strip with the 1px window outline drawn on its outer side
+            strip = tk.Frame(self.root, bg=BG, cursor=cursors[edge])
+            if edge == "e":
+                tk.Frame(strip, bg=OUTLINE, width=1).pack(side="right", fill="y")
+            elif edge == "s":
+                tk.Frame(strip, bg=OUTLINE, height=1).pack(side="bottom", fill="x")
+            strip.bind("<ButtonPress-1>", self._start_resize)
+            strip.bind("<B1-Motion>", lambda e, d=edge: self._on_resize(e, d))
+            self._handles.append((strip, place))
+            return strip
+
+        make("e", relx=1, y=0, anchor="ne", width=g, relheight=1)
+        make("s", x=0, rely=1, anchor="sw", relwidth=1, height=g)
+
+        # Corner grip: three small diagonal dot rows, like most desktop apps
+        size = self._px(16)
+        corner = tk.Canvas(self.root, width=size, height=size, bg=BG, bd=0,
+                           highlightthickness=0, cursor=cursors["se"])
+        dot = max(2, self._px(2))
+        for i in range(3):
+            for j in range(i + 1):
+                x = size - self._px(4) - (i - j) * self._px(4)
+                y = size - self._px(4) - j * self._px(4)
+                corner.create_rectangle(x - dot, y - dot, x, y, fill=FAINT, width=0)
+        corner.create_line(size - 1, 0, size - 1, size, fill=OUTLINE)
+        corner.create_line(0, size - 1, size, size - 1, fill=OUTLINE)
+        corner.bind("<ButtonPress-1>", self._start_resize)
+        corner.bind("<B1-Motion>", lambda e: self._on_resize(e, "se"))
+        self._handles.append((corner, dict(relx=1, rely=1, anchor="se")))
+
+    def _show_resize_handles(self, show: bool) -> None:
+        for widget, place in self._handles:
+            if show:
+                widget.place(**place)
+                # Canvas.lift() raises drawn items, so raise the widget via Tk directly
+                widget.tk.call("raise", widget._w)
+            else:
+                widget.place_forget()
+
+    def _start_resize(self, event) -> None:
+        self._resize_start = (event.x_root, event.y_root,
+                              self.root.winfo_width(), self.root.winfo_height())
+
+    def _on_resize(self, event, edge: str) -> None:
+        x0, y0, w0, h0 = self._resize_start
+        w = w0 + (event.x_root - x0) if "e" in edge else w0
+        h = h0 + (event.y_root - y0) if "s" in edge else h0
+        w = min(max(w, self._px(WORKSPACE_MIN[0])), self.root.winfo_screenwidth())
+        h = min(max(h, self._px(WORKSPACE_MIN[1])), self.root.winfo_screenheight())
+        self.root.geometry(f"{w}x{h}")
 
     def _on_script_change(self, _event=None) -> None:
         self.script.edit_modified(False)  # re-arm the <<Modified>> event
@@ -445,12 +513,22 @@ class PacingCalculatorApp:
 
     def show_view(self, view: str) -> None:
         """Switch between the calculator and the workspace."""
-        self.view = view
+        if view == self.view:
+            return
         if view == "work":
+            self.view = view
             self.work_view.tkraise()
+            if self._ws_size:  # restore the size the Workspace had last time
+                self.root.geometry("%dx%d" % self._ws_size)
+            self._show_resize_handles(True)
             self.script.focus_set()
         else:
+            # remember the Workspace size, then snap back to the fixed calculator size
+            self._ws_size = (self.root.winfo_width(), self.root.winfo_height())
+            self.view = view
+            self._show_resize_handles(False)
             self.calc_view.tkraise()
+            self._fit_height()
             self._on_mode_change()  # restores focus to the first input
         self._style_tabs()
 
